@@ -1,17 +1,20 @@
 // Importar Express y PostgreSQL
 const express = require('express');
+const cors = require('cors');  // ← AGREGAR ESTA LÍNEA
 const pool = require('./db');
 
 // Crear la aplicación
 const app = express();
 
+
+
 // ⭐ MIDDLEWARES
+app.use(cors());  // ← AGREGAR ESTA LÍNEA
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Definir el puerto
 const PORT = 3001;
-
 // ===== RUTAS GET =====
 
 // Ruta raíz
