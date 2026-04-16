@@ -1,21 +1,16 @@
-// Importar Express
+// Importar Express y PostgreSQL
 const express = require('express');
+const pool = require('./db');
 
 // Crear la aplicación
 const app = express();
 
-// ⭐ MIDDLEWARES (DEBEN IR PRIMERO)
+// ⭐ MIDDLEWARES
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Definir el puerto
 const PORT = 3001;
-
-// Base de datos temporal (solo en memoria)
-let usuarios = [
-  { id: 1, nombre: 'Juan', email: 'juan@example.com' },
-  { id: 2, nombre: 'María', email: 'maria@example.com' }
-];
 
 // ===== RUTAS GET =====
 
@@ -23,33 +18,54 @@ let usuarios = [
 app.get('/', (req, res) => {
   res.json({ 
     mensaje: '¡Bienvenido al servidor!',
-    version: '1.0.0'
+    version: '2.0.0',
+    bd: 'PostgreSQL'
   });
 });
 
 // Obtener todos los usuarios
-app.get('/api/usuarios', (req, res) => {
-  res.json({
-    success: true,
-    data: usuarios,
-    cantidad: usuarios.length
-  });
+app.get('/api/usuarios', async (req, res) => {
+  try {
+    const resultado = await pool.query('SELECT * FROM usuarios ORDER BY id');
+    
+    res.json({
+      success: true,
+      data: resultado.rows,
+      cantidad: resultado.rows.length
+    });
+  } catch (error) {
+    console.error('Error en GET /api/usuarios:', error);
+    res.status(500).json({
+      success: false,
+      mensaje: 'Error al obtener usuarios',
+      error: error.message
+    });
+  }
 });
 
 // Obtener un usuario por ID
-app.get('/api/usuarios/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  const usuario = usuarios.find(u => u.id === id);
-  
-  if (usuario) {
+app.get('/api/usuarios/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const resultado = await pool.query('SELECT * FROM usuarios WHERE id = $1', [id]);
+    
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        mensaje: 'Usuario no encontrado'
+      });
+    }
+    
     res.json({
       success: true,
-      data: usuario
+      data: resultado.rows[0]
     });
-  } else {
-    res.status(404).json({
+  } catch (error) {
+    console.error('Error en GET /api/usuarios/:id:', error);
+    res.status(500).json({
       success: false,
-      mensaje: 'Usuario no encontrado'
+      mensaje: 'Error al obtener usuario',
+      error: error.message
     });
   }
 });
@@ -57,10 +73,8 @@ app.get('/api/usuarios/:id', (req, res) => {
 // ===== RUTAS POST =====
 
 // Crear un nuevo usuario
-app.post('/api/usuarios', (req, res) => {
+app.post('/api/usuarios', async (req, res) => {
   try {
-    console.log('Body recibido:', req.body);
-    
     const { nombre, email } = req.body;
     
     // Validación
@@ -71,22 +85,28 @@ app.post('/api/usuarios', (req, res) => {
       });
     }
     
-    // Crear nuevo usuario
-    const nuevoUsuario = {
-      id: usuarios.length > 0 ? Math.max(...usuarios.map(u => u.id)) + 1 : 1,
-      nombre,
-      email
-    };
-    
-    usuarios.push(nuevoUsuario);
+    // Insertar en la BD
+    const resultado = await pool.query(
+      'INSERT INTO usuarios (nombre, email) VALUES ($1, $2) RETURNING *',
+      [nombre, email]
+    );
     
     res.status(201).json({
       success: true,
       mensaje: 'Usuario creado exitosamente',
-      data: nuevoUsuario
+      data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en POST:', error.message);
+    console.error('Error en POST /api/usuarios:', error);
+    
+    // Verificar si el email ya existe
+    if (error.code === '23505') {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'El email ya está registrado'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       mensaje: 'Error al crear usuario',
@@ -98,31 +118,65 @@ app.post('/api/usuarios', (req, res) => {
 // ===== RUTAS PUT =====
 
 // Actualizar un usuario
-app.put('/api/usuarios/:id', (req, res) => {
+app.put('/api/usuarios/:id', async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = req.params.id;
     const { nombre, email } = req.body;
     
-    const usuario = usuarios.find(u => u.id === id);
+    // Validación
+    if (!nombre && !email) {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'Al menos nombre o email son requeridos'
+      });
+    }
     
-    if (!usuario) {
+    // Construir query dinámicamente
+    let query = 'UPDATE usuarios SET ';
+    let valores = [];
+    let contador = 1;
+    
+    if (nombre) {
+      query += `nombre = $${contador}`;
+      valores.push(nombre);
+      contador++;
+    }
+    
+    if (email) {
+      if (nombre) query += ', ';
+      query += `email = $${contador}`;
+      valores.push(email);
+      contador++;
+    }
+    
+    query += ` WHERE id = $${contador} RETURNING *`;
+    valores.push(id);
+    
+    const resultado = await pool.query(query, valores);
+    
+    if (resultado.rows.length === 0) {
       return res.status(404).json({
         success: false,
         mensaje: 'Usuario no encontrado'
       });
     }
     
-    // Actualizar datos
-    if (nombre) usuario.nombre = nombre;
-    if (email) usuario.email = email;
-    
     res.json({
       success: true,
       mensaje: 'Usuario actualizado exitosamente',
-      data: usuario
+      data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en PUT:', error.message);
+    console.error('Error en PUT /api/usuarios/:id:', error);
+    
+    // Verificar si el email ya existe
+    if (error.code === '23505') {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'El email ya está registrado'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       mensaje: 'Error al actualizar usuario',
@@ -134,27 +188,29 @@ app.put('/api/usuarios/:id', (req, res) => {
 // ===== RUTAS DELETE =====
 
 // Eliminar un usuario
-app.delete('/api/usuarios/:id', (req, res) => {
+app.delete('/api/usuarios/:id', async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
-    const indice = usuarios.findIndex(u => u.id === id);
+    const id = req.params.id;
     
-    if (indice === -1) {
+    const resultado = await pool.query(
+      'DELETE FROM usuarios WHERE id = $1 RETURNING *',
+      [id]
+    );
+    
+    if (resultado.rows.length === 0) {
       return res.status(404).json({
         success: false,
         mensaje: 'Usuario no encontrado'
       });
     }
     
-    const usuarioEliminado = usuarios.splice(indice, 1);
-    
     res.json({
       success: true,
       mensaje: 'Usuario eliminado exitosamente',
-      data: usuarioEliminado[0]
+      data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en DELETE:', error.message);
+    console.error('Error en DELETE /api/usuarios/:id:', error);
     res.status(500).json({
       success: false,
       mensaje: 'Error al eliminar usuario',
@@ -176,5 +232,6 @@ app.use((req, res) => {
 // Iniciar el servidor
 app.listen(PORT, () => {
   console.log(`✓ Servidor ejecutándose en http://localhost:${PORT}`);
+  console.log(`✓ Base de datos: PostgreSQL`);
   console.log(`✓ Prueba: GET http://localhost:${PORT}/api/usuarios`);
 });
