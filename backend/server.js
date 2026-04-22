@@ -1,35 +1,47 @@
-// Importar Express y PostgreSQL
+// Importar módulos
 const express = require('express');
-const cors = require('cors');  // ← AGREGAR ESTA LÍNEA
+const cors = require('cors');
 const pool = require('./db');
+const authRoutes = require('./auth');
 
-// Crear la aplicación
+require('dotenv').config();
+
+// Crear app
 const app = express();
-
-
+const PORT = process.env.PORT || 3001;
+const ORIGENES_PERMITIDOS = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174')
+  .split(',')
+  .map((origen) => origen.trim())
+  .filter(Boolean);
 
 // ⭐ MIDDLEWARES
-app.use(cors());  // ← AGREGAR ESTA LÍNEA
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || ORIGENES_PERMITIDOS.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origen no permitido por CORS'));
+  }
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Definir el puerto
-const PORT = 3001;
-// ===== RUTAS GET =====
+// ===== RUTAS DE AUTENTICACIÓN =====
+app.use('/api/auth', authRoutes);
 
-// Ruta raíz
+// ===== RUTAS DE USUARIOS (sin cambios) =====
+
 app.get('/', (req, res) => {
   res.json({ 
-    mensaje: '¡Bienvenido al servidor!',
-    version: '2.0.0',
-    bd: 'PostgreSQL'
+    mensaje: '¡Bienvenido!',
+    version: '3.0.0',
+    autenticacion: 'con 2FA'
   });
 });
 
-// Obtener todos los usuarios
 app.get('/api/usuarios', async (req, res) => {
   try {
-    const resultado = await pool.query('SELECT * FROM usuarios ORDER BY id');
+    const resultado = await pool.query('SELECT id, nombre, email FROM usuarios ORDER BY id');
     
     res.json({
       success: true,
@@ -37,20 +49,18 @@ app.get('/api/usuarios', async (req, res) => {
       cantidad: resultado.rows.length
     });
   } catch (error) {
-    console.error('Error en GET /api/usuarios:', error);
+    console.error('Error:', error);
     res.status(500).json({
       success: false,
-      mensaje: 'Error al obtener usuarios',
-      error: error.message
+      mensaje: 'Error al obtener usuarios'
     });
   }
 });
 
-// Obtener un usuario por ID
 app.get('/api/usuarios/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    const resultado = await pool.query('SELECT * FROM usuarios WHERE id = $1', [id]);
+    const resultado = await pool.query('SELECT id, nombre, email FROM usuarios WHERE id = $1', [id]);
     
     if (resultado.rows.length === 0) {
       return res.status(404).json({
@@ -64,23 +74,18 @@ app.get('/api/usuarios/:id', async (req, res) => {
       data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en GET /api/usuarios/:id:', error);
+    console.error('Error:', error);
     res.status(500).json({
       success: false,
-      mensaje: 'Error al obtener usuario',
-      error: error.message
+      mensaje: 'Error al obtener usuario'
     });
   }
 });
 
-// ===== RUTAS POST =====
-
-// Crear un nuevo usuario
 app.post('/api/usuarios', async (req, res) => {
   try {
     const { nombre, email } = req.body;
     
-    // Validación
     if (!nombre || !email) {
       return res.status(400).json({
         success: false,
@@ -88,53 +93,50 @@ app.post('/api/usuarios', async (req, res) => {
       });
     }
     
-    // Insertar en la BD
+    // Contraseña temporal
+    const contraseñaTemp = Math.random().toString(36).slice(2, 10);
+    const bcrypt = require('bcryptjs');
+    const salt = await bcrypt.genSalt(10);
+    const contraseñaHash = await bcrypt.hash(contraseñaTemp, salt);
+    
     const resultado = await pool.query(
-      'INSERT INTO usuarios (nombre, email) VALUES ($1, $2) RETURNING *',
-      [nombre, email]
+      'INSERT INTO usuarios (nombre, email, contrasenia) VALUES ($1, $2, $3) RETURNING id, nombre, email',
+      [nombre, email, contraseñaHash]
     );
     
     res.status(201).json({
       success: true,
-      mensaje: 'Usuario creado exitosamente',
+      mensaje: 'Usuario creado',
+      contraseña_temporal: contraseñaTemp,
       data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en POST /api/usuarios:', error);
-    
-    // Verificar si el email ya existe
+    console.error('Error:', error);
     if (error.code === '23505') {
       return res.status(400).json({
         success: false,
-        mensaje: 'El email ya está registrado'
+        mensaje: 'El email ya existe'
       });
     }
-    
     res.status(500).json({
       success: false,
-      mensaje: 'Error al crear usuario',
-      error: error.message
+      mensaje: 'Error al crear usuario'
     });
   }
 });
 
-// ===== RUTAS PUT =====
-
-// Actualizar un usuario
 app.put('/api/usuarios/:id', async (req, res) => {
   try {
     const id = req.params.id;
     const { nombre, email } = req.body;
     
-    // Validación
     if (!nombre && !email) {
       return res.status(400).json({
         success: false,
-        mensaje: 'Al menos nombre o email son requeridos'
+        mensaje: 'Al menos un campo es requerido'
       });
     }
     
-    // Construir query dinámicamente
     let query = 'UPDATE usuarios SET ';
     let valores = [];
     let contador = 1;
@@ -152,7 +154,7 @@ app.put('/api/usuarios/:id', async (req, res) => {
       contador++;
     }
     
-    query += ` WHERE id = $${contador} RETURNING *`;
+    query += ` WHERE id = $${contador} RETURNING id, nombre, email`;
     valores.push(id);
     
     const resultado = await pool.query(query, valores);
@@ -166,37 +168,24 @@ app.put('/api/usuarios/:id', async (req, res) => {
     
     res.json({
       success: true,
-      mensaje: 'Usuario actualizado exitosamente',
+      mensaje: 'Usuario actualizado',
       data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en PUT /api/usuarios/:id:', error);
-    
-    // Verificar si el email ya existe
-    if (error.code === '23505') {
-      return res.status(400).json({
-        success: false,
-        mensaje: 'El email ya está registrado'
-      });
-    }
-    
+    console.error('Error:', error);
     res.status(500).json({
       success: false,
-      mensaje: 'Error al actualizar usuario',
-      error: error.message
+      mensaje: 'Error al actualizar'
     });
   }
 });
 
-// ===== RUTAS DELETE =====
-
-// Eliminar un usuario
 app.delete('/api/usuarios/:id', async (req, res) => {
   try {
     const id = req.params.id;
     
     const resultado = await pool.query(
-      'DELETE FROM usuarios WHERE id = $1 RETURNING *',
+      'DELETE FROM usuarios WHERE id = $1 RETURNING id, nombre, email',
       [id]
     );
     
@@ -209,22 +198,19 @@ app.delete('/api/usuarios/:id', async (req, res) => {
     
     res.json({
       success: true,
-      mensaje: 'Usuario eliminado exitosamente',
+      mensaje: 'Usuario eliminado',
       data: resultado.rows[0]
     });
   } catch (error) {
-    console.error('Error en DELETE /api/usuarios/:id:', error);
+    console.error('Error:', error);
     res.status(500).json({
       success: false,
-      mensaje: 'Error al eliminar usuario',
-      error: error.message
+      mensaje: 'Error al eliminar'
     });
   }
 });
 
-// ===== MANEJO DE ERRORES =====
-
-// Ruta no encontrada (404)
+// ===== ERROR 404 =====
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -232,9 +218,8 @@ app.use((req, res) => {
   });
 });
 
-// Iniciar el servidor
+// ===== INICIAR SERVIDOR =====
 app.listen(PORT, () => {
-  console.log(`✓ Servidor ejecutándose en http://localhost:${PORT}`);
+  console.log(`✓ Servidor en http://localhost:${PORT}`);
   console.log(`✓ Base de datos: PostgreSQL`);
-  console.log(`✓ Prueba: GET http://localhost:${PORT}/api/usuarios`);
 });
